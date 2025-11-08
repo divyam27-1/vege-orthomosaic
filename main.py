@@ -51,9 +51,9 @@ class Orthomosaic:
             print(f"[INFO] {self.no_raw_images} Images have been loaded")
         for x in range(self.no_raw_images):
             if x == 0:
-                self.temp_image = self.sticher(self.images[x],self.images[x+1])
+                self.temp_image = self.sticher(self.images[x],self.images[x+1], x)
             elif x < self.no_raw_images-1 :
-                self.temp_image = self.sticher(self.temp_image,self.images[x+1])
+                self.temp_image = self.sticher(self.temp_image,self.images[x+1], x)
             else:
                 self.final_image = self.temp_image                
 
@@ -64,13 +64,12 @@ class Orthomosaic:
         cv2.destroyAllWindows()
         pass
 
-    def sticher(self, image1, image2):
+    def sticher(self, image1, image2, idx):
         # image1_grayscale = cv2.cvtColor(image1, cv2.COLOR_BGR2GRAY)
         # image2_grayscale = cv2.cvtColor(image2, cv2.COLOR_BGR2GRAY)
         self.image1 = image1
         self.image2 = image2
-        orb = cv2.ORB_create(nfeatures=1000)
-        print(self.image1.shape)
+        orb = cv2.ORB_create(nfeatures=2000)
 
         # Find the key points and descriptors with ORB
         keypoints1, descriptors1 = orb.detectAndCompute(self.image1, None)
@@ -90,7 +89,7 @@ class Orthomosaic:
                 good.append(m)
 
         # Set minimum match condition
-        MIN_MATCH_COUNT = 0
+        MIN_MATCH_COUNT = 4
 
         if len(good) > MIN_MATCH_COUNT:
             # Convert keypoints to an argument for findHomography
@@ -100,17 +99,20 @@ class Orthomosaic:
                 [keypoints2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
 
             # Establish a homography
-            M, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+            M, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, ransacReprojThreshold=9.0)
 
+            print(f"[INFO] Stitching images {idx} and {idx+1} : SUCCESS, {len(good)} matches found")
             result = self.wrap_images(image2, image1, M)
             # cv2.imwrite('test4.jpg',result)
             # cv2.imshow("output_image",result)
             # cv2.waitKey(0)
             # cv2.destroyAllWindows()
-            return result
         else:
-             print("Error")
-             pass
+            print(f"[INFO] Stitching images {idx} and {idx+1} : FAILED, not enough matches are found - {len(good)}/{MIN_MATCH_COUNT}") 
+            result = image1
+        
+        cv2.imwrite(f'steps/stitched_{idx}_{idx+1}.jpg',result)
+        return result
 
     def wrap_images(self, image1, image2, H):
         rows1, cols1 = image1.shape[:2]
@@ -123,17 +125,19 @@ class Orthomosaic:
         # When we have established a homography we need to warp perspective
         # Change field of view
         list_of_points_2 = cv2.perspectiveTransform(temp_points, H)
-        list_of_points = np.concatenate(
-            (list_of_points_1, list_of_points_2), axis=0)
+        list_of_points = np.concatenate((list_of_points_1, list_of_points_2), axis=0)
         [x_min, y_min] = np.int32(list_of_points.min(axis=0).ravel() - 0.5)
         [x_max, y_max] = np.int32(list_of_points.max(axis=0).ravel() + 0.5)
+
+        print(f"{list_of_points_1}\n{list_of_points_2}\n")
 
         translation_dist = [-x_min, -y_min]
 
         H_translation = np.array([[1, 0, translation_dist[0]], [
                                  0, 1, translation_dist[1]], [0, 0, 1]])
-        output_img = cv2.warpPerspective(
-            image2, H_translation.dot(H), (x_max-x_min, y_max-y_min))
+        print(f"[INFO] Output image size: width={x_max - x_min}, height={y_max - y_min}\n--------------------")
+        output_img = cv2.warpPerspective(image2, H_translation.dot(H), (x_max-x_min, y_max-y_min))
+
         output_img[translation_dist[1]:rows1+translation_dist[1],
                    translation_dist[0]:cols1+translation_dist[0]] = image1
         return output_img
