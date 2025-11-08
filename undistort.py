@@ -9,32 +9,31 @@ with open('dewarp_param.yaml') as file:
 # Camera parameters (from your EXIF data)
 focal_length = params['fx']
 principal_point = (params['H']/2 - params['cx'], params['V']/2 + params['cy'])
-dist_coeffs = np.array([params["k1"], params["k2"], params["p1"], params["p2"]])  # distortion coefficients
+dist_coeffs = np.array([params["k1"], params["k2"], params["p1"], params["p2"], params["k3"]])  # distortion coefficients
 
 # Camera matrix (3x3)
-mtx = np.array([[focal_length, 0, principal_point[0]],
-                [0, focal_length, principal_point[1]],
-                [0, 0, 1]])
+mtx = np.zeros((3, 3))
+mtx[0, 0] = focal_length
+mtx[1, 1] = focal_length
+mtx[2, 2] = 1.0
+mtx[0, 2] = principal_point[0]
+mtx[1, 2] = principal_point[1]
 
-def undistort_image(image, cam_matrix, distortion_coeffs, crop_percent):
+def undistort_image(image, cam_matrix, distortion_coeffs, crop_percent=0.0):
     """Undistort a single image."""
     
-    # Get the image size
     h, w = image.shape[:2]
-
-    # Compute the optimal new camera matrix (to prevent clipping)
-    new_mtx, roi = cv2.getOptimalNewCameraMatrix(cam_matrix, distortion_coeffs, (w, h), 1, (w, h))
-
-    # Undistort the image using the fisheye model
-    undistorted_image = cv2.fisheye.undistortImage(image, cam_matrix, distortion_coeffs, None, new_mtx)
-
-    # Crop a small percentage from the image (optional, as per your initial request)
-    crop_pixels = undistorted_image.shape[0] * crop_percent
-    undistorted_image = undistorted_image[
-        int(crop_pixels):int(undistorted_image.shape[0]-crop_pixels),
-        int(crop_pixels):int(undistorted_image.shape[1]-crop_pixels)
-    ]
-
+    
+    map1, map2 = cv2.initUndistortRectifyMap(cam_matrix, distortion_coeffs, None, cam_matrix, (w, h), cv2.CV_32FC1)
+    
+    undistorted_image = cv2.remap(image, map1, map2, cv2.INTER_LINEAR)
+    
+    if crop_percent > 0:
+        h, w = undistorted_image.shape[:2]
+        crop_h = int(h * crop_percent)
+        crop_w = int(w * crop_percent)
+        undistorted_image = undistorted_image[crop_h:h - crop_h, crop_w:w - crop_w]
+        
     return undistorted_image
 
 
@@ -45,9 +44,8 @@ def process_and_save_image(image_path, input_dir, output_dir):
         print(f"Could not load image: {image_path}")
         return
     
-    undistorted = undistort_image(image, mtx, dist_coeffs, crop_percent=0.2)
+    undistorted = undistort_image(image, mtx, dist_coeffs, crop_percent=0.0)
     
-    # Get the filename and save the undistorted image
     filename = os.path.basename(image_path)
     output_path = os.path.join(output_dir, filename)
     cv2.imwrite(output_path, undistorted)
@@ -57,29 +55,24 @@ def undistort_images_in_directory(input_dir, output_dir):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
     
-    # Get all the image paths
     image_paths = [
         os.path.join(input_dir, filename)
         for filename in os.listdir(input_dir)
         if os.path.isfile(os.path.join(input_dir, filename)) and filename.lower().endswith(('.jpg', '.jpeg', '.png'))
     ]
     
-    # Create a ThreadPoolExecutor to process the images in parallel
     with ThreadPoolExecutor() as executor:
         futures = [
             executor.submit(process_and_save_image, image_path, input_dir, output_dir)
             for image_path in image_paths
         ]
         
-        # Wait for all futures to complete
         for future in as_completed(futures):
-            future.result()  # Retrieve the result of the future (if needed)
+            future.result()
 
 if __name__ == "__main__":
-    # Directory paths
     input_dir = 'datasets/'
     output_dir = 'datasets_undistorted/'
 
-    # Undistort all images in the input directory
     undistort_images_in_directory(input_dir, output_dir)
     print("All images have been undistorted.")
