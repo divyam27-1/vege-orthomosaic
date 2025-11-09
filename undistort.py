@@ -1,5 +1,8 @@
 import cv2
+import PIL.Image as Image
+from PIL.ExifTags import TAGS
 import numpy as np
+import piexif
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import yaml
@@ -19,7 +22,7 @@ mtx[2, 2] = 1.0
 mtx[0, 2] = principal_point[0]
 mtx[1, 2] = principal_point[1]
 
-def undistort_image(image, cam_matrix, distortion_coeffs, crop_percent=0.0):
+def undistort_image(image, cam_matrix=mtx, distortion_coeffs=dist_coeffs, crop_percent=0.0):
     """Undistort a single image."""
     
     h, w = image.shape[:2]
@@ -37,8 +40,20 @@ def undistort_image(image, cam_matrix, distortion_coeffs, crop_percent=0.0):
     return undistorted_image
 
 
-def process_and_save_image(image_path, input_dir, output_dir):
-    """Helper function to process an image and save it."""
+def process_and_save_image(image_path, input_dir, output_dir, mtx=mtx, dist_coeffs=dist_coeffs):
+    """Helper function to process an image and save it with EXIF data."""
+    pil_image = Image.open(image_path)
+    exif_data = pil_image._getexif()
+
+    gps_info = None
+    if exif_data is not None:
+        for tag, value in exif_data.items():
+            if TAGS.get(tag) == "GPSInfo":
+                gps_info = value
+                break
+
+    print(f"Image at {image_path} has GPS info: {gps_info}")
+
     image = cv2.imread(image_path)
     if image is None:
         print(f"Could not load image: {image_path}")
@@ -48,7 +63,15 @@ def process_and_save_image(image_path, input_dir, output_dir):
     
     filename = os.path.basename(image_path)
     output_path = os.path.join(output_dir, filename)
-    cv2.imwrite(output_path, undistorted)
+
+    if exif_data is not None:
+        pil_undistorted = Image.fromarray(cv2.cvtColor(undistorted, cv2.COLOR_BGR2RGB))
+        
+        exif_bytes = piexif.dump(exif_data)
+        pil_undistorted.save(output_path, exif=exif_bytes)
+    else:
+        print(f"No EXIF data found for image: {image_path}")
+        cv2.imwrite(output_path, undistorted)
 
 def undistort_images_in_directory(input_dir, output_dir):
     """Process all images in the input directory and save the undistorted images in parallel."""
