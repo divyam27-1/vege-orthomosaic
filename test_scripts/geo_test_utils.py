@@ -54,23 +54,3 @@ def find_closest_image_pairs(images: List[ImageWQItem]) -> List[Tuple[ImageWQIte
             remaining_images.remove(closest_image)  # Remove the paired image from the list
 
     return closest_pairs
-
-
-def clear_directory(directory_path):
-    """Remove all files and subdirectories from the specified directory."""
-    if os.path.exists(directory_path):
-        for filename in os.listdir(directory_path):
-            file_path = os.path.join(directory_path, filename)
-            try:
-                if os.path.isdir(file_path):
-                    shutil.rmtree(file_path)  # Remove subdirectory and all its contents
-                else:
-                    os.remove(file_path)  # Remove file
-            except Exception as e:
-                print(f"Error deleting {file_path}: {e}")
-        print(f"Directory {directory_path} cleared.")
-    else:
-        print(f"Directory {directory_path} does not exist.")
-
-# Clear the 'steps/' directory before running your logic
-clear_directory('steps/')

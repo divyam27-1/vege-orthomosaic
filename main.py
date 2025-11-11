@@ -7,21 +7,22 @@ import imutils
 from imutils import paths
 from undistort import mtx as MTX, dist_coeffs as DCOEFF
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import matplotlib.pyplot as plt
+from utils import *
 
 class Orthomosaic:
     def __init__(self, debug):
-        cv2.namedWindow("output", cv2.WINDOW_NORMAL)
         self.images = []        # list of ImageWQItem
         self.no_raw_images = []
         self.temp_image = []
         self.final_image = []
         self.debug = debug
 
-        self.combination_method = "direct"  # Options: direct, superposition, blend, feather
-        self.combination_params = {"alpha": 0.5, "feather_width": 20}
+        self.combination_method = "direct"  # Options: direct, superposition, feather
+        self.combination_params = {"alpha": 1.5, "feather_width": 10}
         pass
 
-    def load_dataset(self, input_dir):
+    def load_dataset(self, input_dir, method="parallel"):
         if self.debug:
             print(f"[INFO] Importing Images from directory {input_dir}...")
 
@@ -60,12 +61,17 @@ class Orthomosaic:
 
             return image_item
         
-
-        with ThreadPoolExecutor() as executor:
-            futures = []
+        if method == "sequential":
             for image_id, imagePath in enumerate(imagePaths):
-                futures.append(executor.submit(preprocess_image, imagePath, image_id))
+                image_item = preprocess_image(imagePath, image_id)
+                if image_item is not None:
+                    self.images.append(image_item)
 
+        elif method == "parallel":
+            with ThreadPoolExecutor() as executor:
+                futures = []
+                for image_id, imagePath in enumerate(imagePaths):
+                    futures.append(executor.submit(preprocess_image, imagePath, image_id))
             for future in as_completed(futures):
                 image_item = future.result()
                 self.images.append(image_item)
@@ -79,18 +85,13 @@ class Orthomosaic:
             print(f"[INFO] {self.no_raw_images} Images have been loaded")
         for x in range(self.no_raw_images):
             if x == 0:
-                self.temp_image = self.sticher(self.images[x], self.images[x+1], x)
+                _, self.temp_image = self.sticher(self.images[x].image, self.images[x+1].image, (x, x+1))
             elif x < self.no_raw_images-1 :
-                self.temp_image = self.sticher(self.temp_image, self.images[x+1], x)
+                _, self.temp_image = self.sticher(self.temp_image, self.images[x+1].image, (x, x+1))
+                if self.temp_image.shape[0] > 10000 or self.temp_image.shape[1] > 10000:
+                    self.temp_image = crop_black_borders(self.temp_image)
             else:
-                self.final_image = self.temp_image                
-
-        # self.final_image = self.sticher(self.images[0], self.images[1])
-        cv2.imshow("output", self.final_image)
-        cv2.imwrite("output.png", self.final_image)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
-        pass
+                self.final_image = self.temp_image           
 
     def sticher(self, image1, image2, idx):
         # image1_grayscale = cv2.cvtColor(image1, cv2.COLOR_BGR2GRAY)
@@ -193,7 +194,7 @@ class Orthomosaic:
             combined_image[y_offset:y_offset + fg_rows, x_offset:x_offset + fg_cols] = image_fg
 
         elif method == "superposition":
-            alpha = kwargs.get("alpha", 1.5)
+            alpha = kwargs.get("alpha", self.combination_params['alpha'])
             condition = image_fg > combined_image[y_offset:y_offset + fg_rows, x_offset:x_offset + fg_cols] / alpha
 
             combined_image[y_offset:y_offset + fg_rows, x_offset:x_offset + fg_cols] = np.where(
@@ -203,13 +204,21 @@ class Orthomosaic:
             )
         
         elif method == "feather":
-            # Create a feathered mask
+            alpha, feather_width = kwargs.get("alpha", self.combination_params['alpha']), kwargs.get('feather_width', self.combination_params['feather_width'])
+
             mask = np.zeros((fg_rows, fg_cols), dtype=np.float32)
             for i in range(fg_rows):
                 for j in range(fg_cols):
                     distance_to_edge = min(i, j, fg_rows - i - 1, fg_cols - j - 1)
-                    mask[i, j] = min(1.0, distance_to_edge / kwargs.get("feather_width", 50))
+                    mask[i, j] = min(1.0, distance_to_edge / feather_width)
             mask = cv2.GaussianBlur(mask, (21, 21), 0)
+
+            condition = image_fg > combined_image[y_offset:y_offset + fg_rows, x_offset:x_offset + fg_cols] / alpha
+            combined_image[y_offset:y_offset + fg_rows, x_offset:x_offset + fg_cols] = np.where(
+                condition,
+                image_fg,
+                combined_image[y_offset:y_offset + fg_rows, x_offset:x_offset + fg_cols]
+            )
 
             for c in range(3):  # Assuming 3 color channels
                 combined_image[y_offset:y_offset + fg_rows, x_offset:x_offset + fg_cols, c] = (
@@ -220,10 +229,16 @@ class Orthomosaic:
         return combined_image
 
 class ImageWQItem:
+    sun_mask_threshold = np.array([230,230,230])
+
     def __init__(self, image, pos, id):
         self.image = image
         self.lat, self.lon, self.alt = pos
         self.id = id
+
+        self.sun_mask = np.all(self.image >= self.sun_mask_threshold, axis=-1)
+        self.sun_mask = np.repeat(self.sun_mask[:, :, np.newaxis], 3, axis=-1)  # Shape: (height, width, 3)
+        self.image = np.ma.masked_where(self.sun_mask, self.image)
 
     def downsample(self, scale_factor=2):
         height, width = self.image.shape[:2]
@@ -249,12 +264,34 @@ class ImageWQItem:
 
         return undistorted_image
 
+    def show_masked_image(self):
+        """Display the original image and the masked version side by side."""
+
+        masked_image = np.ma.filled(self.image, fill_value=0).astype(np.uint8)
+        
+        plt.figure(figsize=(12, 6))
+
+        plt.subplot(1, 2, 1)
+        plt.imshow(self.image)
+        plt.title("Original Image")
+        plt.axis('off')
+
+        plt.subplot(1, 2, 2)
+        plt.imshow(masked_image)
+        plt.title("Masked Image (Sun Reflection Areas Ignored)")
+        plt.axis('off')
+
+        plt.show()
+
 
 if __name__ == "__main__":
+    clear_directory('steps/')
+    clear_directory('matched_features/')
+
     tester = Orthomosaic(debug=True)
-    tester.load_dataset()
-    tester.combination_method = 'superposition'
-    tester.combination_params = {'alpha': 1.5}
+    tester.load_dataset('datasets/', method="sequential")
+    tester.combination_method = 'feather'
+    tester.combination_params = {'alpha': 3.0, 'feather_width': 30}
     tester.mixer()
-else:
-    pass
+
+    cv2.imwrite('final_orthomosaic.jpg', tester.final_image)
